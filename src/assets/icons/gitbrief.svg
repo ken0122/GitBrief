@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="GitBrief">
+  <defs>
+    <mask id="cutout">
+      <rect width="128" height="128" fill="white"/>
+      <text
+        x="64"
+        y="75"
+        fill="black"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif"
+        font-size="66"
+        font-weight="800"
+        text-anchor="middle"
+        dominant-baseline="middle">G</text>
+    </mask>
+  </defs>
+  <circle cx="64" cy="64" r="58" fill="#0d1117" mask="url(#cutout)"/>
+</svg>
