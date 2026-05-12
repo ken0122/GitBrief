@@ -1,5 +1,6 @@
 const CARD_ID = "gh-repo-ai-summary-card";
 const BRIEF_MODE_STORAGE_KEY = "briefModePreference";
+const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const ROUTE_EXCLUDES = new Set([
   "about",
   "account",
@@ -30,22 +31,67 @@ const ROUTE_EXCLUDES = new Set([
 let lastRenderKey = "";
 let renderTimer = 0;
 let briefModePreference = "catalog";
+let extensionContextInvalidated = false;
+let pageObserver = null;
+const summaryCache = new Map();
+const streamRequests = new Map();
 
+installExtensionContextErrorHandlers();
 init();
 
+function installExtensionContextErrorHandlers() {
+  window.addEventListener("error", (event) => {
+    if (!isExtensionContextInvalidated(event.error || event.message)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    handleInvalidatedExtensionContext();
+  }, true);
+
+  window.addEventListener("unhandledrejection", (event) => {
+    if (!isExtensionContextInvalidated(event.reason)) {
+      return;
+    }
+
+    event.preventDefault();
+    handleInvalidatedExtensionContext();
+  }, true);
+}
+
+function handleInvalidatedExtensionContext() {
+  extensionContextInvalidated = true;
+  window.clearTimeout(renderTimer);
+  pageObserver?.disconnect();
+  for (const request of streamRequests.values()) {
+    request.reject(new Error("扩展已重新加载，请刷新当前 GitHub 页面后再试。"));
+  }
+  streamRequests.clear();
+}
+
 function init() {
-  loadScopeModePreference().finally(scheduleRender);
+  if (!isExtensionContextAvailable()) {
+    handleInvalidatedExtensionContext();
+    return;
+  }
+
+  loadScopeModePreference().finally(() => {
+    if (!extensionContextInvalidated) {
+      scheduleRender();
+    }
+  });
   patchHistoryMethod("pushState");
   patchHistoryMethod("replaceState");
   window.addEventListener("popstate", scheduleRender);
 
-  const observer = new MutationObserver(scheduleRender);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  pageObserver = new MutationObserver(scheduleRender);
+  pageObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 async function loadScopeModePreference() {
   try {
-    const stored = await chrome.storage.local.get({ [BRIEF_MODE_STORAGE_KEY]: "catalog" });
+    const stored = await safeStorageGet({ [BRIEF_MODE_STORAGE_KEY]: "catalog" });
     const mode = String(stored[BRIEF_MODE_STORAGE_KEY] || "catalog");
     if (isValidBriefMode(mode)) {
       briefModePreference = mode;
@@ -55,23 +101,92 @@ async function loadScopeModePreference() {
   }
 }
 
+async function safeStorageGet(defaultValue) {
+  try {
+    return await chrome.storage.local.get(defaultValue);
+  } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      console.debug("[GitBrief] extension context invalidated while reading storage");
+      return defaultValue || {};
+    }
+    throw error;
+  }
+}
+
+async function safeStorageSet(value) {
+  try {
+    await chrome.storage.local.set(value);
+  } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      console.debug("[GitBrief] extension context invalidated while writing storage");
+      return;
+    }
+    throw error;
+  }
+}
+
+async function safeSendMessage(message) {
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      console.debug("[GitBrief] extension context invalidated while sending message", { type: message?.type });
+      return { ok: false, error: "扩展已重新加载，请刷新当前 GitHub 页面后再试。" };
+    }
+    throw error;
+  }
+}
+
+function isExtensionContextInvalidated(error) {
+  return String(error?.message || error || "").includes("Extension context invalidated");
+}
+
+function isExtensionContextAvailable() {
+  if (extensionContextInvalidated) {
+    return false;
+  }
+
+  try {
+    return Boolean(chrome?.runtime?.id);
+  } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      handleInvalidatedExtensionContext();
+      return false;
+    }
+    throw error;
+  }
+}
+
 function patchHistoryMethod(methodName) {
   const original = history[methodName];
   history[methodName] = function patchedHistoryMethod(...args) {
     const result = original.apply(this, args);
-    scheduleRender();
+    if (isExtensionContextAvailable()) {
+      scheduleRender();
+    }
     return result;
   };
 }
 
 function scheduleRender() {
+  if (!isExtensionContextAvailable()) {
+    return;
+  }
+
   window.clearTimeout(renderTimer);
   renderTimer = window.setTimeout(() => {
+    if (!isExtensionContextAvailable()) {
+      return;
+    }
     renderCard().catch(() => {});
   }, 250);
 }
 
 async function renderCard() {
+  if (!isExtensionContextAvailable()) {
+    return;
+  }
+
   const repo = parseRepository();
   const existing = document.getElementById(CARD_ID);
   const mountTarget = findMountTarget();
@@ -145,6 +260,9 @@ async function renderCard() {
   const menu = card.querySelector(".gh-repo-ai-card__menu");
 
   mainButton.addEventListener("click", () => {
+    if (!isExtensionContextAvailable()) {
+      return;
+    }
     const latestPageContext = detectPageContext(repo);
     const latestScopeInfo = resolveScopeInfo(briefModePreference, latestPageContext, isSublevelPage(latestPageContext));
     handleSummarize(card, repo, latestPageContext, latestScopeInfo);
@@ -153,6 +271,9 @@ async function renderCard() {
   if (toggleButton && menu) {
     toggleButton.addEventListener("click", (event) => {
       event.preventDefault();
+      if (!isExtensionContextAvailable()) {
+        return;
+      }
       const willOpen = menu.hidden;
       closeAllDropdownMenus();
       if (willOpen) {
@@ -164,6 +285,9 @@ async function renderCard() {
     menu.querySelectorAll("[data-brief-mode]").forEach((item) => {
       item.addEventListener("click", async (event) => {
         event.preventDefault();
+        if (!isExtensionContextAvailable()) {
+          return;
+        }
         const mode = event.currentTarget.dataset.briefMode;
         await setBriefModePreference(mode);
       });
@@ -172,20 +296,27 @@ async function renderCard() {
 
   card.querySelector(".gh-repo-ai-card__settings").addEventListener("click", (event) => {
     event.preventDefault();
-    chrome.runtime.sendMessage({ type: "open-options" });
+    if (!isExtensionContextAvailable()) {
+      return;
+    }
+    safeSendMessage({ type: "open-options" });
   });
 
   mountCard(card, mountTarget);
 }
 
 async function setBriefModePreference(next) {
+  if (!isExtensionContextAvailable()) {
+    return;
+  }
+
   const mode = String(next || "catalog");
   if (!isValidBriefMode(mode)) {
     return;
   }
 
   briefModePreference = mode;
-  await chrome.storage.local.set({ [BRIEF_MODE_STORAGE_KEY]: mode });
+  await safeStorageSet({ [BRIEF_MODE_STORAGE_KEY]: mode });
   scheduleRender();
 }
 
@@ -199,6 +330,10 @@ function closeAllDropdownMenus() {
 }
 
 document.addEventListener("click", (event) => {
+  if (!isExtensionContextAvailable()) {
+    return;
+  }
+
   const target = event.target instanceof Element ? event.target : null;
   if (!target || !target.closest(`#${CARD_ID}`)) {
     closeAllDropdownMenus();
@@ -206,10 +341,60 @@ document.addEventListener("click", (event) => {
 }, true);
 
 document.addEventListener("keydown", (event) => {
+  if (!isExtensionContextAvailable()) {
+    return;
+  }
+
   if (event.key === "Escape") {
     closeAllDropdownMenus();
   }
 });
+
+registerStreamMessageListener();
+
+function registerStreamMessageListener() {
+  if (!isExtensionContextAvailable()) {
+    return;
+  }
+
+  try {
+    chrome.runtime.onMessage.addListener((message) => {
+      if (!message?.requestId || !String(message.type || "").startsWith("summarize-repository-stream-")) {
+        return false;
+      }
+
+      const request = streamRequests.get(message.requestId);
+      if (!request) {
+        return false;
+      }
+
+      if (message.type === "summarize-repository-stream-chunk") {
+        request.onChunk(message.chunk || "", message);
+        return false;
+      }
+
+      if (message.type === "summarize-repository-stream-done") {
+        streamRequests.delete(message.requestId);
+        request.resolve(message);
+        return false;
+      }
+
+      if (message.type === "summarize-repository-stream-error") {
+        streamRequests.delete(message.requestId);
+        request.reject(new Error(message.error || "摘要生成失败。"));
+        return false;
+      }
+
+      return false;
+    });
+  } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      handleInvalidatedExtensionContext();
+      return;
+    }
+    throw error;
+  }
+}
 
 function renderModeMenuItems(activeMode) {
   const modes = [
@@ -457,21 +642,54 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
   result.textContent = "";
 
   try {
-    const context = await collectRepositoryContext(repo, pageContext, scopeInfo);
-    status.textContent = "正在调用模型生成摘要...";
-
-    const response = await chrome.runtime.sendMessage({
-      type: "summarize-repository",
-      payload: context
-    });
-
-    if (!response?.ok) {
-      throw new Error(response?.error || "摘要生成失败。");
+    const cacheKey = makeSummaryCacheKey(repo, pageContext, scopeInfo);
+    const cached = getSummaryCache(cacheKey);
+    if (cached?.summary) {
+      result.innerHTML = renderMarkdownLike(cached.summary);
+      result.hidden = false;
+      status.textContent = "已使用缓存摘要。";
+      console.debug("[GitBrief] summary cache hit", { cacheKey });
+      return;
     }
 
-    result.innerHTML = renderMarkdownLike(response.summary);
+    const collectStartedAt = performance.now();
+    const context = cached?.context || await collectRepositoryContext(repo, pageContext, scopeInfo);
+    const collectDurationMs = Math.round(performance.now() - collectStartedAt);
+    setSummaryCache(cacheKey, { ...cached, context });
+    console.debug("[GitBrief] context collected", { cacheKey, durationMs: collectDurationMs, cached: Boolean(cached?.context) });
+
+    status.textContent = "正在生成摘要...";
     result.hidden = false;
-    status.textContent = "摘要已生成。";
+    let streamedSummary = "";
+    const modelStartedAt = performance.now();
+
+    const doneMessage = await summarizeRepositoryWithStream(context, {
+      onChunk(chunk, meta) {
+        if (!chunk) {
+          return;
+        }
+        streamedSummary += chunk;
+        result.innerHTML = renderMarkdownLike(streamedSummary);
+        if (meta?.firstChunkMs) {
+          status.textContent = "正在生成摘要...";
+        }
+      }
+    });
+
+    const summary = String(doneMessage.summary || streamedSummary).trim();
+    if (!summary) {
+      throw new Error("模型接口没有返回可用摘要。");
+    }
+
+    result.innerHTML = renderMarkdownLike(summary);
+    setSummaryCache(cacheKey, { context, summary });
+    status.textContent = doneMessage.fallback ? "摘要已生成（已使用兼容模式）。" : "摘要已生成。";
+    console.debug("[GitBrief] summary generated", {
+      cacheKey,
+      firstTokenMs: doneMessage.firstChunkMs || null,
+      modelDurationMs: doneMessage.durationMs || Math.round(performance.now() - modelStartedAt),
+      fallback: Boolean(doneMessage.fallback)
+    });
   } catch (error) {
     status.textContent = error.message || String(error);
   } finally {
@@ -479,6 +697,89 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
     if (toggleButton) {
       toggleButton.disabled = false;
     }
+  }
+}
+
+async function summarizeRepositoryWithStream(context, handlers) {
+  const requestId = createStreamRequestId();
+  const streamPromise = new Promise((resolve, reject) => {
+    streamRequests.set(requestId, {
+      resolve,
+      reject,
+      onChunk: handlers?.onChunk || (() => {})
+    });
+  });
+
+  safeSendMessage({
+    type: "summarize-repository-stream-start",
+    requestId,
+    payload: context
+  })
+    .then((response) => {
+      const request = streamRequests.get(requestId);
+      if (!request) {
+        return;
+      }
+
+      streamRequests.delete(requestId);
+      if (!response?.ok || response.error) {
+        request.reject(new Error(response?.error || "摘要生成失败。"));
+        return;
+      }
+
+      request.resolve(response);
+    })
+    .catch((error) => {
+      const request = streamRequests.get(requestId);
+      if (!request) {
+        return;
+      }
+
+      streamRequests.delete(requestId);
+      request.reject(error);
+    });
+
+  return streamPromise;
+}
+
+function createStreamRequestId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function makeSummaryCacheKey(repo, pageContext, scopeInfo) {
+  return [
+    repo.owner,
+    repo.name,
+    pageContext.branch || "",
+    scopeInfo.effectiveMode || "",
+    scopeInfo.scopePath || "/",
+    pageContext.path || ""
+  ].join("|");
+}
+
+function getSummaryCache(cacheKey) {
+  const entry = summaryCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+
+  if (Date.now() - entry.createdAt > SUMMARY_CACHE_TTL_MS) {
+    summaryCache.delete(cacheKey);
+    return null;
+  }
+
+  return entry.value;
+}
+
+function setSummaryCache(cacheKey, value) {
+  summaryCache.set(cacheKey, {
+    createdAt: Date.now(),
+    value
+  });
+
+  if (summaryCache.size > 20) {
+    const oldestKey = summaryCache.keys().next().value;
+    summaryCache.delete(oldestKey);
   }
 }
 
@@ -492,9 +793,11 @@ async function collectRepositoryContext(repo, pageContext, scopeInfo) {
   const topics = uniqueTexts(document.querySelectorAll("a.topic-tag"));
   const languages = collectLanguages();
   const files = collectVisibleFiles();
-  const readme = await collectReadme(repo, pageContext.branch, scopeInfo);
-  const fileContext = await collectFileContext(repo, pageContext, scopeInfo);
-  const directoryContext = await collectDirectoryContext(repo, pageContext, scopeInfo);
+  const [readme, fileContext, directoryContext] = await Promise.all([
+    collectReadme(repo, pageContext.branch, scopeInfo).catch(() => ""),
+    collectFileContext(repo, pageContext, scopeInfo).catch(() => ({ path: "", content: "" })),
+    collectDirectoryContext(repo, pageContext, scopeInfo).catch(() => ({ entries: [], fileSamples: [] }))
+  ]);
 
   return {
     ...repo,
@@ -503,9 +806,9 @@ async function collectRepositoryContext(repo, pageContext, scopeInfo) {
     topics,
     languages,
     files,
-    readme: truncate(readme, 14000),
+    readme: truncate(readme, 8000),
     filePath: fileContext.path,
-    fileContent: truncate(fileContext.content, 12000),
+    fileContent: truncate(fileContext.content, 6000),
     directoryEntries: directoryContext.entries,
     directoryFileSamples: directoryContext.fileSamples,
     scope: {
@@ -526,7 +829,7 @@ async function collectDirectoryContext(repo, pageContext, scopeInfo) {
   }
 
   const directoryPath = String(scopeInfo.scopePath || "/").replace(/^\/+/, "");
-  const response = await chrome.runtime.sendMessage({
+  const response = await safeSendMessage({
     type: "fetch-directory-snapshot",
     payload: {
       owner: repo.owner,
@@ -559,7 +862,7 @@ async function collectFileContext(repo, pageContext, scopeInfo) {
     return { path: pageContext.path, content: pageCode };
   }
 
-  const response = await chrome.runtime.sendMessage({
+  const response = await safeSendMessage({
     type: "fetch-file-content",
     payload: {
       owner: repo.owner,
@@ -594,7 +897,7 @@ async function collectReadme(repo, branch, scopeInfo) {
   const scopePath = String(scopeInfo?.scopePath || "/").replace(/^\/+/, "");
   const preferScoped = scopeInfo?.preference === "catalog" && scopePath.length > 0;
 
-  const response = await chrome.runtime.sendMessage({
+  const response = await safeSendMessage({
     type: "fetch-readme",
     payload: {
       ...repo,

@@ -13,6 +13,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "summarize-repository-stream-start") {
+    const requestId = message.requestId || createRequestId();
+    streamSummaryToTab(message.payload, _sender.tab?.id, requestId)
+      .then((result) => sendResponse({ ok: true, requestId, ...result }))
+      .catch((error) => sendResponse({
+        ok: false,
+        requestId,
+        error: error.message || String(error)
+      }));
+    return true;
+  }
+
   if (message?.type === "get-config-status") {
     getConfig()
       .then((config) => sendResponse({
@@ -53,6 +65,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+function createRequestId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function sendStreamMessage(tabId, message) {
+  if (!tabId) {
+    return Promise.resolve();
+  }
+  return chrome.tabs.sendMessage(tabId, message).catch(() => {});
+}
+
 async function getConfig() {
   const stored = await chrome.storage.local.get(DEFAULT_CONFIG);
   return {
@@ -76,20 +99,7 @@ async function summarizeRepository(repoContext) {
     body: JSON.stringify({
       model: config.model,
       temperature: config.temperature,
-      messages: [
-        {
-          role: "system",
-          content: [
-            "你是资深软件架构师，擅长快速阅读 GitHub 仓库上下文。",
-            "请用中文输出，语言清晰、具体、避免空泛。",
-            "如果上下文不足，请明确说明哪些判断来自仓库页面可见信息，哪些仍需查看源码确认。"
-          ].join("\n")
-        },
-        {
-          role: "user",
-          content: buildPrompt(repoContext)
-        }
-      ]
+      messages: buildMessages(repoContext)
     })
   });
 
@@ -106,6 +116,195 @@ async function summarizeRepository(repoContext) {
   }
 
   return summary.trim();
+}
+
+function buildMessages(repoContext) {
+  return [
+    {
+      role: "system",
+      content: [
+        "你是资深软件架构师，擅长快速阅读 GitHub 仓库上下文。",
+        "请用中文输出，语言清晰、具体、避免空泛。",
+        "如果上下文不足，请明确说明哪些判断来自仓库页面可见信息，哪些仍需查看源码确认。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: buildPrompt(repoContext)
+    }
+  ];
+}
+
+async function streamSummaryToTab(repoContext, tabId, requestId) {
+  const startedAt = performance.now();
+  let chunkCount = 0;
+
+  try {
+    const config = await getConfig();
+    validateConfig(config);
+
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: config.temperature,
+        stream: true,
+        messages: buildMessages(repoContext)
+      })
+    });
+
+    if (!response.ok) {
+      const detail = await readResponseError(response);
+      throw new Error(`模型接口请求失败：${response.status} ${detail}`);
+    }
+
+    if (!response.body) {
+      const summary = await summarizeRepository(repoContext);
+      await sendStreamMessage(tabId, {
+        type: "summarize-repository-stream-chunk",
+        requestId,
+        chunk: summary
+      });
+      await sendStreamMessage(tabId, {
+        type: "summarize-repository-stream-done",
+        requestId,
+        summary,
+        durationMs: Math.round(performance.now() - startedAt),
+        fallback: true
+      });
+      return {
+        summary,
+        durationMs: Math.round(performance.now() - startedAt),
+        fallback: true
+      };
+    }
+
+    const decoder = new TextDecoder();
+    const reader = response.body.getReader();
+    let buffer = "";
+    let fullText = "";
+    let firstChunkMs = 0;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const parsed = parseStreamLine(line);
+        if (!parsed || parsed.done || !parsed.text) {
+          continue;
+        }
+
+        chunkCount += 1;
+        if (!firstChunkMs) {
+          firstChunkMs = Math.round(performance.now() - startedAt);
+        }
+
+        fullText += parsed.text;
+        await sendStreamMessage(tabId, {
+          type: "summarize-repository-stream-chunk",
+          requestId,
+          chunk: parsed.text,
+          firstChunkMs
+        });
+      }
+    }
+
+    if (!fullText.trim()) {
+      throw new Error("模型接口没有返回可用摘要。");
+    }
+
+    await sendStreamMessage(tabId, {
+      type: "summarize-repository-stream-done",
+      requestId,
+      summary: fullText.trim(),
+      firstChunkMs,
+      durationMs: Math.round(performance.now() - startedAt),
+      fallback: false
+    });
+    return {
+      summary: fullText.trim(),
+      firstChunkMs,
+      durationMs: Math.round(performance.now() - startedAt),
+      fallback: false
+    };
+  } catch (error) {
+    if (chunkCount === 0) {
+      try {
+        const summary = await summarizeRepository(repoContext);
+        await sendStreamMessage(tabId, {
+          type: "summarize-repository-stream-chunk",
+          requestId,
+          chunk: summary
+        });
+        await sendStreamMessage(tabId, {
+          type: "summarize-repository-stream-done",
+          requestId,
+          summary,
+          durationMs: Math.round(performance.now() - startedAt),
+          fallback: true
+        });
+        return {
+          summary,
+          durationMs: Math.round(performance.now() - startedAt),
+          fallback: true
+        };
+      } catch (fallbackError) {
+        await sendStreamMessage(tabId, {
+          type: "summarize-repository-stream-error",
+          requestId,
+          error: fallbackError.message || String(fallbackError)
+        });
+        return {
+          error: fallbackError.message || String(fallbackError)
+        };
+      }
+    }
+
+    await sendStreamMessage(tabId, {
+      type: "summarize-repository-stream-error",
+      requestId,
+      error: error.message || String(error)
+    });
+    return {
+      error: error.message || String(error)
+    };
+  }
+}
+
+async function readResponseError(response) {
+  const data = await response.json().catch(() => ({}));
+  return data?.error?.message || data?.message || response.statusText;
+}
+
+function parseStreamLine(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed || !trimmed.startsWith("data:")) {
+    return null;
+  }
+
+  const payload = trimmed.slice(5).trim();
+  if (!payload) {
+    return null;
+  }
+  if (payload === "[DONE]") {
+    return { done: true };
+  }
+
+  const data = JSON.parse(payload);
+  const choice = data?.choices?.[0];
+  const text = choice?.delta?.content || choice?.message?.content || "";
+  return { done: false, text };
 }
 
 function validateConfig(config) {
@@ -267,7 +466,7 @@ async function fetchDirectorySnapshot(payload) {
   const sampleCandidates = Array.isArray(data)
     ? data
       .filter((item) => item?.type === "file" && item?.download_url && isTextLike(item?.name || "") && Number(item?.size || 0) <= 200000)
-      .slice(0, 6)
+      .slice(0, 4)
     : [];
 
   const fileSamples = await Promise.all(sampleCandidates.map(async (item) => {
