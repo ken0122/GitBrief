@@ -1,6 +1,6 @@
 const CARD_ID = "gh-repo-ai-summary-card";
-const SUMMARY_CACHE_STORAGE_KEY = "summaryCache";
-const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
+const CONTEXT_CACHE_TTL_MS = 10 * 60 * 1000;
+const CONTEXT_CACHE_MAX_ENTRIES = 20;
 const ROUTE_EXCLUDES = new Set([
   "about",
   "account",
@@ -82,30 +82,6 @@ function init() {
 
   pageObserver = new MutationObserver(scheduleRender);
   pageObserver.observe(document.documentElement, { childList: true, subtree: true });
-}
-
-async function safeStorageGet(defaultValue) {
-  try {
-    return await chrome.storage.local.get(defaultValue);
-  } catch (error) {
-    if (isExtensionContextInvalidated(error)) {
-      console.debug("[GitBrief] extension context invalidated while reading storage");
-      return defaultValue || {};
-    }
-    throw error;
-  }
-}
-
-async function safeStorageSet(value) {
-  try {
-    await chrome.storage.local.set(value);
-  } catch (error) {
-    if (isExtensionContextInvalidated(error)) {
-      console.debug("[GitBrief] extension context invalidated while writing storage");
-      return;
-    }
-    throw error;
-  }
 }
 
 async function safeSendMessage(message) {
@@ -509,21 +485,31 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
   result.textContent = "";
 
   try {
-    const cacheKey = makeSummaryCacheKey(repo, pageContext, scopeInfo);
-    const cached = await getSummaryCache(cacheKey);
+    status.textContent = "正在检查本地摘要...";
+    const cacheScope = makeSummaryCacheScope(repo, pageContext, scopeInfo);
+    const cached = await getSummaryCache(cacheScope);
     if (cached?.summary) {
       result.innerHTML = renderMarkdownLike(cached.summary);
       result.hidden = false;
-      status.textContent = "已使用缓存摘要。";
-      console.debug("[GitBrief] summary cache hit", { cacheKey });
+      status.textContent = cached.cacheWarning ? "已使用本地摘要，未能确认最新状态。" : "已使用本地摘要。";
+      console.debug("[GitBrief] summary cache hit", {
+        cacheKey: cacheScope.cacheKey,
+        reason: cached.cacheReason,
+        warning: cached.cacheWarning || ""
+      });
       return;
+    }
+    if (cached?.stale) {
+      status.textContent = "本地摘要已过期，正在更新...";
+    } else {
+      status.textContent = `正在采集${renderScopeHint(scopeInfo)}的信息...`;
     }
 
     const collectStartedAt = performance.now();
     const context = cached?.context || await collectRepositoryContext(repo, pageContext, scopeInfo);
     const collectDurationMs = Math.round(performance.now() - collectStartedAt);
-    await setSummaryCache(cacheKey, { ...cached, context });
-    console.debug("[GitBrief] context collected", { cacheKey, durationMs: collectDurationMs, cached: Boolean(cached?.context) });
+    await setSummaryCache(cacheScope, { ...cached, context });
+    console.debug("[GitBrief] context collected", { cacheKey: cacheScope.cacheKey, durationMs: collectDurationMs, cached: Boolean(cached?.context) });
 
     status.textContent = "正在生成摘要...";
     result.hidden = false;
@@ -549,10 +535,10 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
     }
 
     result.innerHTML = renderMarkdownLike(summary);
-    await setSummaryCache(cacheKey, { context, summary });
+    await setSummaryCache(cacheScope, { context, summary });
     status.textContent = doneMessage.fallback ? "摘要已生成（已使用兼容模式）。" : "摘要已生成。";
     console.debug("[GitBrief] summary generated", {
-      cacheKey,
+      cacheKey: cacheScope.cacheKey,
       firstTokenMs: doneMessage.firstChunkMs || null,
       modelDurationMs: doneMessage.durationMs || Math.round(performance.now() - modelStartedAt),
       fallback: Boolean(doneMessage.fallback)
@@ -610,14 +596,30 @@ function createStreamRequestId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function makeSummaryCacheKey(repo, pageContext, scopeInfo) {
+function makeSummaryCacheScope(repo, pageContext, scopeInfo) {
   const scopePath = normalizeCachePath(scopeInfo.scopePath || "/");
+  const scope = {
+    owner: repo.owner,
+    name: repo.name,
+    branch: pageContext.branch || "",
+    effectiveMode: scopeInfo.effectiveMode || "",
+    scopePath,
+    pageType: pageContext.pageType || "",
+    sourceUrl: location.href
+  };
+  return {
+    ...scope,
+    cacheKey: makeSummaryCacheKey(scope)
+  };
+}
+
+function makeSummaryCacheKey(repo, pageContext, scopeInfo) {
   return [
     repo.owner,
     repo.name,
-    pageContext.branch || "",
-    scopeInfo.effectiveMode || "",
-    scopePath
+    repo.branch || pageContext?.branch || "",
+    repo.effectiveMode || scopeInfo?.effectiveMode || "",
+    repo.scopePath || normalizeCachePath(scopeInfo?.scopePath || "/")
   ].join("|");
 }
 
@@ -626,72 +628,67 @@ function normalizeCachePath(path) {
   return normalized ? `/${normalized}` : "/";
 }
 
-async function getSummaryCache(cacheKey) {
-  const entry = summaryCache.get(cacheKey);
-  if (entry) {
-    if (Date.now() - entry.createdAt <= SUMMARY_CACHE_TTL_MS) {
-      return entry.value;
-    }
-    summaryCache.delete(cacheKey);
+async function getSummaryCache(cacheScope) {
+  const entry = summaryCache.get(cacheScope.cacheKey);
+  const memoryValue = entry && Date.now() - entry.createdAt <= CONTEXT_CACHE_TTL_MS
+    ? entry.value
+    : null;
+  if (entry && !memoryValue) {
+    summaryCache.delete(cacheScope.cacheKey);
   }
 
-  const stored = await readStoredSummaryCache();
-  const storedEntry = stored[cacheKey];
-  if (!storedEntry) {
-    return null;
+  const response = await safeSendMessage({
+    type: "get-summary-cache",
+    payload: cacheScope
+  });
+
+  if (response?.ok && response.hit && response.summary) {
+    return {
+      ...memoryValue,
+      summary: response.summary,
+      cacheReason: response.reason || "",
+      cacheWarning: response.warning || ""
+    };
   }
 
-  if (Date.now() - Number(storedEntry.createdAt || 0) > SUMMARY_CACHE_TTL_MS) {
-    delete stored[cacheKey];
-    await writeStoredSummaryCache(stored);
-    return null;
+  if (response?.ok && response.stale) {
+    return {
+      ...memoryValue,
+      stale: true,
+      cacheReason: response.reason || "",
+      cacheWarning: response.warning || ""
+    };
   }
 
-  summaryCache.set(cacheKey, storedEntry);
-  return storedEntry.value;
+  return memoryValue;
 }
 
-async function setSummaryCache(cacheKey, value) {
+async function setSummaryCache(cacheScope, value) {
   const entry = {
     createdAt: Date.now(),
-    value
+    value: value?.context ? { context: value.context } : {}
   };
 
-  summaryCache.set(cacheKey, entry);
+  summaryCache.set(cacheScope.cacheKey, entry);
 
-  if (summaryCache.size > 20) {
+  if (summaryCache.size > CONTEXT_CACHE_MAX_ENTRIES) {
     const oldestKey = summaryCache.keys().next().value;
     summaryCache.delete(oldestKey);
   }
 
-  const stored = await readStoredSummaryCache();
-  stored[cacheKey] = entry;
   if (value?.summary) {
-    stored[cacheKey] = {
-      createdAt: entry.createdAt,
-      value: { summary: value.summary }
-    };
-    await writeStoredSummaryCache(trimStoredSummaryCache(stored));
+    const response = await safeSendMessage({
+      type: "set-summary-cache",
+      payload: {
+        ...cacheScope,
+        summary: value.summary,
+        sourceUrl: cacheScope.sourceUrl
+      }
+    });
+    if (!response?.ok) {
+      console.debug("[GitBrief] summary cache write skipped", { error: response?.error || "unknown" });
+    }
   }
-}
-
-async function readStoredSummaryCache() {
-  const stored = await safeStorageGet({ [SUMMARY_CACHE_STORAGE_KEY]: {} });
-  const cache = stored[SUMMARY_CACHE_STORAGE_KEY];
-  return cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {};
-}
-
-async function writeStoredSummaryCache(cache) {
-  await safeStorageSet({ [SUMMARY_CACHE_STORAGE_KEY]: cache });
-}
-
-function trimStoredSummaryCache(cache) {
-  const entries = Object.entries(cache)
-    .filter(([, entry]) => Date.now() - Number(entry?.createdAt || 0) <= SUMMARY_CACHE_TTL_MS)
-    .sort((a, b) => Number(b[1]?.createdAt || 0) - Number(a[1]?.createdAt || 0))
-    .slice(0, 20);
-
-  return Object.fromEntries(entries);
 }
 
 async function collectRepositoryContext(repo, pageContext, scopeInfo) {

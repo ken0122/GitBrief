@@ -8,6 +8,7 @@
 - 顶层仓库页面（含同级标签页）只显示单按钮：`Brief repo`。
 - 目录页面只显示单按钮：`Brief catalog`。
 - 文件详情页面只显示单按钮：`Brief file`。
+- 摘要会持久化到扩展 IndexedDB；再次点击时会优先读取本地摘要，并用 GitHub 路径元数据判断是否需要更新。
 - 支持配置 Base URL、模型 ID、API Key 和 temperature。
 - 通过 background service worker 发起模型请求，内容脚本不直接持有请求逻辑。
 - 输出内容覆盖项目主要作用、技术原理、安装使用、源码入口和风险注意事项。
@@ -50,4 +51,4 @@ Content-Type: application/json
 
 ## 安全说明
 
-API Key 保存在本机 Chrome 扩展存储 `chrome.storage.local` 中。它不是端到端加密的机密保险箱；如果你需要更高安全性，建议改成由自己的后端代理模型请求，并让扩展只调用你的后端。
+API Key 保存在本机 Chrome 扩展存储 `chrome.storage.local` 中，摘要缓存保存在扩展 IndexedDB 中。它们都不是端到端加密的机密保险箱；如果你需要更高安全性，建议改成由自己的后端代理模型请求，并让扩展只调用你的后端。
