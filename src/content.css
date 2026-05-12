@@ -53,21 +53,21 @@
 }
 
 .gh-repo-ai-card__actions {
-  background: var(--button-primary-bgColor-rest, #2da44e);
-  border: 1px solid rgb(31 136 61 / 35%);
+  background: transparent;
+  border: 0;
   border-radius: 6px;
   display: flex;
   margin-bottom: 0;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
 }
 
 .gh-repo-ai-card__button {
   appearance: none;
   align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
+  background: var(--button-primary-bgColor-rest, #2da44e);
+  border: 1px solid var(--button-primary-borderColor-rest, rgb(31 136 61 / 35%));
+  border-radius: 6px;
   color: var(--button-primary-fgColor-rest, #ffffff);
   cursor: pointer;
   display: inline-flex;
@@ -91,59 +91,12 @@
   width: 100%;
 }
 
-.gh-repo-ai-card__button--toggle {
-  border-left: 1px solid rgb(255 255 255 / 24%);
-  min-width: 34px;
-  padding: 0;
-  width: 34px;
-}
-
 .gh-repo-ai-card__button:hover {
   background: var(--button-primary-bgColor-hover, #2c974b);
 }
 
 .gh-repo-ai-card__button:active {
   background: var(--button-primary-bgColor-active, #298e46);
-}
-
-.gh-repo-ai-card__button--toggle svg {
-  display: block;
-}
-
-.gh-repo-ai-card__menu {
-  background: var(--overlay-bgColor, #ffffff);
-  border: 1px solid var(--borderColor-default, #d0d7de);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgb(140 149 159 / 20%);
-  margin-top: 4px;
-  min-width: 180px;
-  padding: 4px;
-  position: absolute;
-  right: 0;
-  top: 100%;
-  z-index: 1000;
-}
-
-.gh-repo-ai-card__menu-item {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  color: var(--fgColor-default, #1f2328);
-  cursor: pointer;
-  display: block;
-  font: inherit;
-  padding: 6px 8px;
-  text-align: left;
-  width: 100%;
-}
-
-.gh-repo-ai-card__menu-item:hover {
-  background: var(--control-transparent-bgColor-hover, #f3f4f6);
-}
-
-.gh-repo-ai-card__menu-item[aria-checked="true"] {
-  font-weight: 600;
 }
 
 .gh-repo-ai-card__status {

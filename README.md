@@ -6,7 +6,8 @@
 
 - 在 `github.com/{owner}/{repo}` 仓库页面右侧插入摘要卡片。
 - 顶层仓库页面（含同级标签页）只显示单按钮：`Brief repo`。
-- 子级页面（目录/文件）显示 Dropdown Button，支持 `Brief catalog`（默认）和 `Brief repo`。
+- 目录页面只显示单按钮：`Brief catalog`。
+- 文件详情页面只显示单按钮：`Brief file`。
 - 支持配置 Base URL、模型 ID、API Key 和 temperature。
 - 通过 background service worker 发起模型请求，内容脚本不直接持有请求逻辑。
 - 输出内容覆盖项目主要作用、技术原理、安装使用、源码入口和风险注意事项。
@@ -36,9 +37,9 @@ Content-Type: application/json
 1. 打开任意 GitHub 仓库页面。
 2. 在右侧找到“AI 仓库摘要”卡片（在 About 上方）。
 3. 在顶层页面直接点击 `Brief repo`。
-4. 在目录/文件页面可通过下拉箭头在 `Brief catalog` 和 `Brief repo` 间切换。
-5. 点击主按钮执行摘要。
-5. 等待模型返回摘要。
+4. 在目录页面直接点击 `Brief catalog`。
+5. 在文件详情页面直接点击 `Brief file`。
+6. 点击主按钮执行摘要并等待模型返回。
 
 ## 看不到卡片时
 

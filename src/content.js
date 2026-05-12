@@ -1,5 +1,4 @@
 const CARD_ID = "gh-repo-ai-summary-card";
-const BRIEF_MODE_STORAGE_KEY = "briefModePreference";
 const SUMMARY_CACHE_STORAGE_KEY = "summaryCache";
 const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const ROUTE_EXCLUDES = new Set([
@@ -31,7 +30,6 @@ const ROUTE_EXCLUDES = new Set([
 
 let lastRenderKey = "";
 let renderTimer = 0;
-let briefModePreference = "catalog";
 let extensionContextInvalidated = false;
 let pageObserver = null;
 const summaryCache = new Map();
@@ -77,29 +75,13 @@ function init() {
     return;
   }
 
-  loadScopeModePreference().finally(() => {
-    if (!extensionContextInvalidated) {
-      scheduleRender();
-    }
-  });
+  scheduleRender();
   patchHistoryMethod("pushState");
   patchHistoryMethod("replaceState");
   window.addEventListener("popstate", scheduleRender);
 
   pageObserver = new MutationObserver(scheduleRender);
   pageObserver.observe(document.documentElement, { childList: true, subtree: true });
-}
-
-async function loadScopeModePreference() {
-  try {
-    const stored = await safeStorageGet({ [BRIEF_MODE_STORAGE_KEY]: "catalog" });
-    const mode = String(stored[BRIEF_MODE_STORAGE_KEY] || "catalog");
-    if (isValidBriefMode(mode)) {
-      briefModePreference = mode;
-    }
-  } catch {
-    briefModePreference = "catalog";
-  }
 }
 
 async function safeStorageGet(defaultValue) {
@@ -199,16 +181,13 @@ async function renderCard() {
   }
 
   const pageContext = detectPageContext(repo);
-  const showDropdown = isSublevelPage(pageContext);
-  const scopeInfo = resolveScopeInfo(briefModePreference, pageContext, showDropdown);
+  const scopeInfo = resolveScopeInfo(pageContext);
   const hierarchyText = renderHierarchyText(repo, pageContext);
   const renderKey = [
     repo.owner,
     repo.name,
     location.pathname,
     mountTarget.kind,
-    briefModePreference,
-    showDropdown,
     scopeInfo.effectiveMode,
     hierarchyText
   ].join("|");
@@ -233,67 +212,23 @@ async function renderCard() {
       </div>
       <a class="gh-repo-ai-card__settings" href="#" title="打开扩展设置">设置</a>
     </div>
-    <div class="gh-repo-ai-card__actions ${showDropdown ? "" : "gh-repo-ai-card__actions--single"}">
+    <div class="gh-repo-ai-card__actions gh-repo-ai-card__actions--single">
       <button class="gh-repo-ai-card__button gh-repo-ai-card__button--main" type="button">${escapeHtml(renderPrimaryButtonLabel(scopeInfo))}</button>
-      ${showDropdown ? `
-        <button
-          class="gh-repo-ai-card__button gh-repo-ai-card__button--toggle"
-          type="button"
-          aria-haspopup="menu"
-          aria-expanded="false"
-          title="切换摘要范围"
-        >
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
-            <path d="M12.78 5.22a.75.75 0 0 1 0 1.06L8.53 10.53a.75.75 0 0 1-1.06 0L3.22 6.28a.75.75 0 1 1 1.06-1.06L8 8.94l3.72-3.72a.75.75 0 0 1 1.06 0Z" fill="currentColor"></path>
-          </svg>
-        </button>
-        <div class="gh-repo-ai-card__menu" role="menu" hidden>
-          ${renderModeMenuItems(briefModePreference)}
-        </div>
-      ` : ""}
     </div>
     <div class="gh-repo-ai-card__status" role="status"></div>
     <article class="gh-repo-ai-card__result" hidden></article>
   `;
 
   const mainButton = card.querySelector(".gh-repo-ai-card__button--main");
-  const toggleButton = card.querySelector(".gh-repo-ai-card__button--toggle");
-  const menu = card.querySelector(".gh-repo-ai-card__menu");
 
   mainButton.addEventListener("click", () => {
     if (!isExtensionContextAvailable()) {
       return;
     }
     const latestPageContext = detectPageContext(repo);
-    const latestScopeInfo = resolveScopeInfo(briefModePreference, latestPageContext, isSublevelPage(latestPageContext));
+    const latestScopeInfo = resolveScopeInfo(latestPageContext);
     handleSummarize(card, repo, latestPageContext, latestScopeInfo);
   });
-
-  if (toggleButton && menu) {
-    toggleButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      if (!isExtensionContextAvailable()) {
-        return;
-      }
-      const willOpen = menu.hidden;
-      closeAllDropdownMenus();
-      if (willOpen) {
-        menu.hidden = false;
-        toggleButton.setAttribute("aria-expanded", "true");
-      }
-    });
-
-    menu.querySelectorAll("[data-brief-mode]").forEach((item) => {
-      item.addEventListener("click", async (event) => {
-        event.preventDefault();
-        if (!isExtensionContextAvailable()) {
-          return;
-        }
-        const mode = event.currentTarget.dataset.briefMode;
-        await setBriefModePreference(mode);
-      });
-    });
-  }
 
   card.querySelector(".gh-repo-ai-card__settings").addEventListener("click", (event) => {
     event.preventDefault();
@@ -305,51 +240,6 @@ async function renderCard() {
 
   mountCard(card, mountTarget);
 }
-
-async function setBriefModePreference(next) {
-  if (!isExtensionContextAvailable()) {
-    return;
-  }
-
-  const mode = String(next || "catalog");
-  if (!isValidBriefMode(mode)) {
-    return;
-  }
-
-  briefModePreference = mode;
-  await safeStorageSet({ [BRIEF_MODE_STORAGE_KEY]: mode });
-  scheduleRender();
-}
-
-function closeAllDropdownMenus() {
-  document.querySelectorAll(".gh-repo-ai-card__menu").forEach((node) => {
-    node.hidden = true;
-  });
-  document.querySelectorAll(".gh-repo-ai-card__button--toggle").forEach((node) => {
-    node.setAttribute("aria-expanded", "false");
-  });
-}
-
-document.addEventListener("click", (event) => {
-  if (!isExtensionContextAvailable()) {
-    return;
-  }
-
-  const target = event.target instanceof Element ? event.target : null;
-  if (!target || !target.closest(`#${CARD_ID}`)) {
-    closeAllDropdownMenus();
-  }
-}, true);
-
-document.addEventListener("keydown", (event) => {
-  if (!isExtensionContextAvailable()) {
-    return;
-  }
-
-  if (event.key === "Escape") {
-    closeAllDropdownMenus();
-  }
-});
 
 registerStreamMessageListener();
 
@@ -397,24 +287,11 @@ function registerStreamMessageListener() {
   }
 }
 
-function renderModeMenuItems(activeMode) {
-  const modes = [
-    { value: "catalog", label: "Brief catalog" },
-    { value: "repo", label: "Brief repo" }
-  ];
-
-  return modes.map((mode) => {
-    const selected = mode.value === activeMode;
-    const mark = selected ? "✓ " : "";
-    return `<button type="button" class="gh-repo-ai-card__menu-item" role="menuitemradio" aria-checked="${selected ? "true" : "false"}" data-brief-mode="${mode.value}">${mark}${mode.label}</button>`;
-  }).join("");
-}
-
 function renderPrimaryButtonLabel(scopeInfo) {
-  if (scopeInfo.preference === "catalog") {
-    return "Brief catalog";
+  if (scopeInfo.preference === "file") {
+    return "Brief file";
   }
-  return "Brief repo";
+  return scopeInfo.preference === "catalog" ? "Brief catalog" : "Brief repo";
 }
 
 function renderHierarchyText(repo, pageContext) {
@@ -422,10 +299,6 @@ function renderHierarchyText(repo, pageContext) {
     return `${repo.owner}/${repo.name}`;
   }
   return `${repo.owner}/${repo.name}/${pageContext.path}`;
-}
-
-function isValidBriefMode(mode) {
-  return mode === "catalog" || mode === "repo";
 }
 
 function parseRepository() {
@@ -477,8 +350,8 @@ function detectPageContext(repo) {
   };
 }
 
-function resolveScopeInfo(preference, pageContext, showDropdown) {
-  if (!showDropdown) {
+function resolveScopeInfo(pageContext) {
+  if (pageContext.pageType === "repo") {
     return {
       preference: "repo",
       effectiveMode: "repository",
@@ -487,12 +360,11 @@ function resolveScopeInfo(preference, pageContext, showDropdown) {
     };
   }
 
-  const safePreference = isValidBriefMode(preference) ? preference : "catalog";
-  if (safePreference === "repo") {
+  if (pageContext.pageType === "blob") {
     return {
-      preference: "repo",
-      effectiveMode: "repository",
-      scopePath: "/",
+      preference: "file",
+      effectiveMode: "file",
+      scopePath: pageContext.path ? `/${pageContext.path}` : "/",
       warning: ""
     };
   }
@@ -510,13 +382,12 @@ function resolveScopeInfo(preference, pageContext, showDropdown) {
 }
 
 function renderScopeHint(scopeInfo) {
+  if (scopeInfo.preference === "file") {
+    return `文件范围（${scopeInfo.scopePath}）`;
+  }
   return scopeInfo.preference === "catalog"
     ? `目录范围（${scopeInfo.scopePath}）`
     : "仓库范围（/）";
-}
-
-function isSublevelPage(pageContext) {
-  return pageContext.pageType === "tree" || pageContext.pageType === "blob";
 }
 
 function parentDirectoryPath(path) {
@@ -629,15 +500,10 @@ function mountCard(card, target) {
 
 async function handleSummarize(card, repo, pageContext, scopeInfo) {
   const mainButton = card.querySelector(".gh-repo-ai-card__button--main");
-  const toggleButton = card.querySelector(".gh-repo-ai-card__button--toggle");
   const status = card.querySelector(".gh-repo-ai-card__status");
   const result = card.querySelector(".gh-repo-ai-card__result");
 
-  closeAllDropdownMenus();
   mainButton.disabled = true;
-  if (toggleButton) {
-    toggleButton.disabled = true;
-  }
   status.textContent = `正在采集${renderScopeHint(scopeInfo)}的信息...`;
   result.hidden = true;
   result.textContent = "";
@@ -695,9 +561,6 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
     status.textContent = error.message || String(error);
   } finally {
     mainButton.disabled = false;
-    if (toggleButton) {
-      toggleButton.disabled = false;
-    }
   }
 }
 
@@ -898,7 +761,7 @@ async function collectDirectoryContext(repo, pageContext, scopeInfo) {
 }
 
 async function collectFileContext(repo, pageContext, scopeInfo) {
-  if (scopeInfo.preference !== "catalog" || pageContext.pageType !== "blob") {
+  if (scopeInfo.preference !== "file" || pageContext.pageType !== "blob") {
     return { path: "", content: "" };
   }
   if (!pageContext.path) {
@@ -942,7 +805,10 @@ async function collectReadme(repo, branch, scopeInfo) {
     return pageReadme;
   }
 
-  const scopePath = String(scopeInfo?.scopePath || "/").replace(/^\/+/, "");
+  const readmeScopePath = scopeInfo?.preference === "file"
+    ? parentDirectoryPath(scopeInfo.scopePath)
+    : scopeInfo?.scopePath;
+  const scopePath = String(readmeScopePath || "/").replace(/^\/+/, "");
   const preferScoped = scopeInfo?.preference === "catalog" && scopePath.length > 0;
 
   const response = await safeSendMessage({
