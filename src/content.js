@@ -1,5 +1,6 @@
 const CARD_ID = "gh-repo-ai-summary-card";
 const BRIEF_MODE_STORAGE_KEY = "briefModePreference";
+const SUMMARY_CACHE_STORAGE_KEY = "summaryCache";
 const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const ROUTE_EXCLUDES = new Set([
   "about",
@@ -643,7 +644,7 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
 
   try {
     const cacheKey = makeSummaryCacheKey(repo, pageContext, scopeInfo);
-    const cached = getSummaryCache(cacheKey);
+    const cached = await getSummaryCache(cacheKey);
     if (cached?.summary) {
       result.innerHTML = renderMarkdownLike(cached.summary);
       result.hidden = false;
@@ -655,7 +656,7 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
     const collectStartedAt = performance.now();
     const context = cached?.context || await collectRepositoryContext(repo, pageContext, scopeInfo);
     const collectDurationMs = Math.round(performance.now() - collectStartedAt);
-    setSummaryCache(cacheKey, { ...cached, context });
+    await setSummaryCache(cacheKey, { ...cached, context });
     console.debug("[GitBrief] context collected", { cacheKey, durationMs: collectDurationMs, cached: Boolean(cached?.context) });
 
     status.textContent = "正在生成摘要...";
@@ -682,7 +683,7 @@ async function handleSummarize(card, repo, pageContext, scopeInfo) {
     }
 
     result.innerHTML = renderMarkdownLike(summary);
-    setSummaryCache(cacheKey, { context, summary });
+    await setSummaryCache(cacheKey, { context, summary });
     status.textContent = doneMessage.fallback ? "摘要已生成（已使用兼容模式）。" : "摘要已生成。";
     console.debug("[GitBrief] summary generated", {
       cacheKey,
@@ -747,40 +748,87 @@ function createStreamRequestId() {
 }
 
 function makeSummaryCacheKey(repo, pageContext, scopeInfo) {
+  const scopePath = normalizeCachePath(scopeInfo.scopePath || "/");
   return [
     repo.owner,
     repo.name,
     pageContext.branch || "",
     scopeInfo.effectiveMode || "",
-    scopeInfo.scopePath || "/",
-    pageContext.path || ""
+    scopePath
   ].join("|");
 }
 
-function getSummaryCache(cacheKey) {
-  const entry = summaryCache.get(cacheKey);
-  if (!entry) {
-    return null;
-  }
-
-  if (Date.now() - entry.createdAt > SUMMARY_CACHE_TTL_MS) {
-    summaryCache.delete(cacheKey);
-    return null;
-  }
-
-  return entry.value;
+function normalizeCachePath(path) {
+  const normalized = String(path || "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  return normalized ? `/${normalized}` : "/";
 }
 
-function setSummaryCache(cacheKey, value) {
-  summaryCache.set(cacheKey, {
+async function getSummaryCache(cacheKey) {
+  const entry = summaryCache.get(cacheKey);
+  if (entry) {
+    if (Date.now() - entry.createdAt <= SUMMARY_CACHE_TTL_MS) {
+      return entry.value;
+    }
+    summaryCache.delete(cacheKey);
+  }
+
+  const stored = await readStoredSummaryCache();
+  const storedEntry = stored[cacheKey];
+  if (!storedEntry) {
+    return null;
+  }
+
+  if (Date.now() - Number(storedEntry.createdAt || 0) > SUMMARY_CACHE_TTL_MS) {
+    delete stored[cacheKey];
+    await writeStoredSummaryCache(stored);
+    return null;
+  }
+
+  summaryCache.set(cacheKey, storedEntry);
+  return storedEntry.value;
+}
+
+async function setSummaryCache(cacheKey, value) {
+  const entry = {
     createdAt: Date.now(),
     value
-  });
+  };
+
+  summaryCache.set(cacheKey, entry);
 
   if (summaryCache.size > 20) {
     const oldestKey = summaryCache.keys().next().value;
     summaryCache.delete(oldestKey);
   }
+
+  const stored = await readStoredSummaryCache();
+  stored[cacheKey] = entry;
+  if (value?.summary) {
+    stored[cacheKey] = {
+      createdAt: entry.createdAt,
+      value: { summary: value.summary }
+    };
+    await writeStoredSummaryCache(trimStoredSummaryCache(stored));
+  }
+}
+
+async function readStoredSummaryCache() {
+  const stored = await safeStorageGet({ [SUMMARY_CACHE_STORAGE_KEY]: {} });
+  const cache = stored[SUMMARY_CACHE_STORAGE_KEY];
+  return cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {};
+}
+
+async function writeStoredSummaryCache(cache) {
+  await safeStorageSet({ [SUMMARY_CACHE_STORAGE_KEY]: cache });
+}
+
+function trimStoredSummaryCache(cache) {
+  const entries = Object.entries(cache)
+    .filter(([, entry]) => Date.now() - Number(entry?.createdAt || 0) <= SUMMARY_CACHE_TTL_MS)
+    .sort((a, b) => Number(b[1]?.createdAt || 0) - Number(a[1]?.createdAt || 0))
+    .slice(0, 20);
+
+  return Object.fromEntries(entries);
 }
 
 async function collectRepositoryContext(repo, pageContext, scopeInfo) {
