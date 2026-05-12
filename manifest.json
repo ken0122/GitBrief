@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub Repository Summarizer",
+  "description": "Insert an AI summary card into GitHub repository pages.",
+  "version": "0.1.10",
+  "permissions": ["storage"],
+  "host_permissions": ["https://github.com/*", "https://raw.githubusercontent.com/*", "<all_urls>"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*/*"],
+      "js": ["src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "src/options.html",
+  "action": {
+    "default_title": "GitHub Repo Summarizer",
+    "default_popup": "src/popup.html"
+  }
+}

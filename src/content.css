@@ -1,0 +1,174 @@
+.gh-repo-ai-card {
+  border: 1px solid var(--borderColor-default, #d0d7de);
+  box-sizing: border-box;
+  border-radius: 6px;
+  background: var(--bgColor-default, #ffffff);
+  color: var(--fgColor-default, #1f2328);
+  margin: 0 0 16px;
+  max-width: 100%;
+  padding: 16px;
+  font-size: 14px;
+  line-height: 1.45;
+  width: 100%;
+}
+
+.gh-repo-ai-card--header,
+.gh-repo-ai-card--main {
+  margin: 16px auto;
+  max-width: 1280px;
+  width: calc(100% - 32px);
+}
+
+.gh-repo-ai-card__header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.gh-repo-ai-card__header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.gh-repo-ai-card__header p {
+  color: var(--fgColor-muted, #656d76);
+  font-size: 12px;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.gh-repo-ai-card__settings {
+  color: var(--fgColor-accent, #0969da);
+  flex: 0 0 auto;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.gh-repo-ai-card__settings:hover {
+  text-decoration: underline;
+}
+
+.gh-repo-ai-card__actions {
+  background: var(--button-primary-bgColor-rest, #2da44e);
+  border: 1px solid rgb(31 136 61 / 35%);
+  border-radius: 6px;
+  display: flex;
+  margin-bottom: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.gh-repo-ai-card__button {
+  appearance: none;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--button-primary-fgColor-rest, #ffffff);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: 600;
+  justify-content: center;
+  min-height: 34px;
+  padding: 6px 12px;
+}
+
+.gh-repo-ai-card__button:disabled {
+  cursor: wait;
+  opacity: 0.66;
+}
+
+.gh-repo-ai-card__button--main {
+  flex: 1;
+}
+
+.gh-repo-ai-card__actions--single .gh-repo-ai-card__button--main {
+  width: 100%;
+}
+
+.gh-repo-ai-card__button--toggle {
+  border-left: 1px solid rgb(255 255 255 / 24%);
+  min-width: 34px;
+  padding: 0;
+  width: 34px;
+}
+
+.gh-repo-ai-card__button:hover {
+  background: var(--button-primary-bgColor-hover, #2c974b);
+}
+
+.gh-repo-ai-card__button:active {
+  background: var(--button-primary-bgColor-active, #298e46);
+}
+
+.gh-repo-ai-card__button--toggle svg {
+  display: block;
+}
+
+.gh-repo-ai-card__menu {
+  background: var(--overlay-bgColor, #ffffff);
+  border: 1px solid var(--borderColor-default, #d0d7de);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(140 149 159 / 20%);
+  margin-top: 4px;
+  min-width: 180px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 1000;
+}
+
+.gh-repo-ai-card__menu-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fgColor-default, #1f2328);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  padding: 6px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.gh-repo-ai-card__menu-item:hover {
+  background: var(--control-transparent-bgColor-hover, #f3f4f6);
+}
+
+.gh-repo-ai-card__menu-item[aria-checked="true"] {
+  font-weight: 600;
+}
+
+.gh-repo-ai-card__status {
+  color: var(--fgColor-muted, #656d76);
+  font-size: 12px;
+  margin-top: 12px;
+}
+
+.gh-repo-ai-card__status:empty {
+  display: none;
+}
+
+.gh-repo-ai-card__result {
+  border-top: 1px solid var(--borderColor-muted, #d8dee4);
+  margin-top: 12px;
+  max-height: 520px;
+  overflow: auto;
+  padding-top: 12px;
+}
+
+.gh-repo-ai-card__result h4 {
+  font-size: 14px;
+  margin: 12px 0 6px;
+}
+
+.gh-repo-ai-card__result h4:first-child {
+  margin-top: 0;
+}
