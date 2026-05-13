@@ -1,3 +1,5 @@
+MIT License - Copyright (c) 2026 ken0122
+
 # GitHub Repository Summarizer
 
 一个 Manifest V3 Chrome 插件。打开 GitHub repository 页面时，它会在右侧插入“AI 仓库摘要”卡片；点击“总结此仓库”后，会读取当前页面可见的仓库信息和 README，并通过你配置的 Chat Completions 兼容接口生成中文概要。
@@ -52,13 +54,3 @@ Content-Type: application/json
 ## 安全说明
 
 API Key 保存在本机 Chrome 扩展存储 `chrome.storage.local` 中，摘要缓存保存在扩展 IndexedDB 中。它们都不是端到端加密的机密保险箱；如果你需要更高安全性，建议改成由自己的后端代理模型请求，并让扩展只调用你的后端。
-
-## MIT License
-
-Copyright (c) 2026 ken0122
-
-本项目基于 MIT License 开源。
-
-你可以自由使用、复制、修改、合并、发布、分发、再许可和销售本项目的副本，但必须在所有副本或主要部分中保留版权声明和许可声明。
-
-本项目按“现状”提供，不提供任何明示或暗示担保，包括但不限于适销性、特定用途适用性和非侵权担保。作者不对因使用本项目产生的任何索赔、损害或其他责任负责。
