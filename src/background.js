@@ -1,3 +1,7 @@
+if (typeof importScripts === "function") {
+  importScripts("prompt.js");
+}
+
 const DEFAULT_CONFIG = {
   baseUrl: "",
   model: "",
@@ -9,7 +13,7 @@ const SUMMARY_CACHE_DB_VERSION = 1;
 const SUMMARY_CACHE_STORE = "summaries";
 const SUMMARY_CACHE_MAX_RECORDS = 200;
 const SUMMARY_CACHE_FALLBACK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const SUMMARY_PROMPT_VERSION = 1;
+const SUMMARY_PROMPT_VERSION = 2;
 const SUMMARY_METADATA_VERSION = 1;
 
 let summaryCacheDbPromise = null;
@@ -262,20 +266,7 @@ async function summarizeRepository(repoContext) {
 }
 
 function buildMessages(repoContext) {
-  return [
-    {
-      role: "system",
-      content: [
-        "你是资深软件架构师，擅长快速阅读 GitHub 仓库上下文。",
-        "请用中文输出，语言清晰、具体、避免空泛。",
-        "如果上下文不足，请明确说明哪些判断来自仓库页面可见信息，哪些仍需查看源码确认。"
-      ].join("\n")
-    },
-    {
-      role: "user",
-      content: buildPrompt(repoContext)
-    }
-  ];
+  return GitBriefPrompt.buildMessages(repoContext);
 }
 
 async function streamSummaryToTab(repoContext, tabId, requestId) {
@@ -463,59 +454,7 @@ function validateConfig(config) {
 }
 
 function buildPrompt(repo) {
-  const scopeMode = repo.scope?.effectiveMode || "repository";
-  const scopeLabel = scopeMode === "directory" ? "目录级" : scopeMode === "file" ? "文件级" : "仓库级";
-  const scopePath = repo.scope?.scopePath || "/";
-  const scopeRule = scopeMode === "file"
-    ? "你必须只围绕当前文件进行摘要，不要把父目录或整个仓库当成摘要对象；README 只能作为背景线索。"
-    : scopeMode === "directory"
-      ? "你必须只围绕给定目录路径进行摘要，不要把整个仓库当成摘要对象。"
-      : "可以在仓库级别总结。";
-  const outputStructure = scopeMode === "file"
-    ? [
-      "1. 文件作用：这个文件在项目中负责什么。",
-      "2. 关键逻辑：概括主要流程、核心函数或重要代码块。",
-      "3. 输入输出/依赖关系：说明它依赖哪些上下文、模块、数据或外部接口，以及产出什么。",
-      "4. 需要重点阅读的代码段或概念：指出后续阅读时最值得关注的部分。",
-      "5. 风险与注意事项：指出潜在边界条件、维护风险或需要继续确认的信息。"
-    ]
-    : [
-      "1. 主要作用：这个项目解决什么问题，面向谁。",
-      "2. 技术原理：从可见信息推断它大致如何工作，涉及哪些关键模块或技术栈。",
-      "3. 安装与使用：给出可执行的安装/运行步骤；如果信息不足，给出需要进一步查看的文件。",
-      "4. 适合关注的源码入口：列出值得先看的文件或目录。",
-      "5. 风险与注意事项：指出文档缺失、维护状态、依赖或安全方面的潜在风险。"
-    ];
-
-  return [
-    `仓库：${repo.owner}/${repo.name}`,
-    `页面 URL：${repo.url}`,
-    `摘要范围模式：${scopeLabel}`,
-    `摘要范围路径：${repo.scope?.scopePath || "/"}`,
-    `当前页面类型：${repo.scope?.pageType || "未知"}`,
-    `当前分支：${repo.scope?.branch || "未知"}`,
-    `模式说明：${repo.scope?.warning || "无"}`,
-    `范围约束：${scopeRule}`,
-    `标题：${repo.title || "未知"}`,
-    `简介：${repo.description || "未提供"}`,
-    `主题标签：${repo.topics?.join(", ") || "未提供"}`,
-    `语言/技术线索：${repo.languages?.join(", ") || "未提供"}`,
-    `可见文件：${repo.files?.join(", ") || "未采集到"}`,
-    `目录清单（API）：${formatDirectoryEntries(repo.directoryEntries)}`,
-    "",
-    "目录文件片段（优先用于目录级摘要）：",
-    formatDirectorySamples(repo.directoryFileSamples),
-    "",
-    `README 或页面主要内容（路径参考：${scopePath}）：`,
-    repo.readme || "未采集到 README 内容。",
-    "",
-    `当前文件路径：${repo.filePath || "无"}`,
-    "当前文件内容（仅文件级可用）：",
-    repo.fileContent || "未采集到文件正文。",
-    "",
-    "请按以下结构输出：",
-    ...outputStructure
-  ].join("\n");
+  return GitBriefPrompt.buildPrompt(repo);
 }
 
 async function fetchReadme(repo) {
@@ -623,7 +562,7 @@ async function fetchDirectorySnapshot(payload) {
   const sampleCandidates = Array.isArray(data)
     ? data
       .filter((item) => item?.type === "file" && item?.download_url && isTextLike(item?.name || "") && Number(item?.size || 0) <= 200000)
-      .slice(0, 4)
+      .slice(0, GitBriefPrompt.PROMPT_BUDGETS.catalogSampleFiles)
     : [];
 
   const fileSamples = await Promise.all(sampleCandidates.map(async (item) => {
@@ -635,7 +574,7 @@ async function fetchDirectorySnapshot(payload) {
       const text = await fileResp.text();
       return {
         path: item.path || item.name || "",
-        snippet: truncateForPrompt(text, 1200)
+        snippet: GitBriefPrompt.truncateForPrompt(text, GitBriefPrompt.PROMPT_BUDGETS.catalogSampleChars)
       };
     } catch {
       return null;
@@ -643,7 +582,7 @@ async function fetchDirectorySnapshot(payload) {
   }));
 
   return {
-    entries: entries.slice(0, 80),
+    entries: entries.slice(0, GitBriefPrompt.PROMPT_BUDGETS.catalogEntries),
     fileSamples: fileSamples.filter(Boolean)
   };
 }
@@ -839,30 +778,4 @@ function isTextLike(filename) {
     ".css", ".scss", ".less", ".html", ".xml", ".sh", ".bash", ".zsh"
   ];
   return exts.some((ext) => lower.endsWith(ext));
-}
-
-function truncateForPrompt(text, maxLength) {
-  const value = String(text || "");
-  if (value.length <= maxLength) {
-    return value;
-  }
-  return `${value.slice(0, maxLength)}\n...[已截断]`;
-}
-
-function formatDirectoryEntries(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return "未采集到目录清单。";
-  }
-  return entries
-    .map((item) => `${item.type === "dir" ? "[DIR]" : "[FILE]"} ${item.path || "(unknown)"}`)
-    .join("; ");
-}
-
-function formatDirectorySamples(samples) {
-  if (!Array.isArray(samples) || samples.length === 0) {
-    return "未采集到目录文件片段。";
-  }
-  return samples
-    .map((item) => `--- ${item.path} ---\n${item.snippet || ""}`)
-    .join("\n\n");
 }

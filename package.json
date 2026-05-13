@@ -1,0 +1,9 @@
+{
+  "name": "gitbrief",
+  "version": "0.1.10",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "test:unit": "node --test test/*.test.js"
+  }
+}

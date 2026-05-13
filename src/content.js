@@ -1,6 +1,16 @@
 const CARD_ID = "gh-repo-ai-summary-card";
 const CONTEXT_CACHE_TTL_MS = 10 * 60 * 1000;
 const CONTEXT_CACHE_MAX_ENTRIES = 20;
+const CONTEXT_BUDGETS = {
+  repoReadmeChars: 3500,
+  repoVisibleFiles: 30,
+  catalogEntries: 50,
+  catalogSampleFiles: 2,
+  catalogSampleChars: 700,
+  catalogFallbackReadmeChars: 800,
+  fileContentChars: 4500,
+  fileFallbackReadmeChars: 500
+};
 const ROUTE_EXCLUDES = new Set([
   "about",
   "account",
@@ -701,11 +711,25 @@ async function collectRepositoryContext(repo, pageContext, scopeInfo) {
   const topics = uniqueTexts(document.querySelectorAll("a.topic-tag"));
   const languages = collectLanguages();
   const files = collectVisibleFiles();
-  const [readme, fileContext, directoryContext] = await Promise.all([
-    collectReadme(repo, pageContext.branch, scopeInfo).catch(() => ""),
-    collectFileContext(repo, pageContext, scopeInfo).catch(() => ({ path: "", content: "" })),
-    collectDirectoryContext(repo, pageContext, scopeInfo).catch(() => ({ entries: [], fileSamples: [] }))
-  ]);
+  let readme = "";
+  let fileContext = { path: "", content: "" };
+  let directoryContext = { entries: [], fileSamples: [] };
+
+  if (scopeInfo.preference === "file") {
+    fileContext = await collectFileContext(repo, pageContext, scopeInfo).catch(() => ({ path: "", content: "" }));
+    if (!fileContext.content) {
+      readme = await collectReadme(repo, pageContext.branch, scopeInfo).catch(() => "");
+    }
+  } else if (scopeInfo.preference === "catalog") {
+    directoryContext = await collectDirectoryContext(repo, pageContext, scopeInfo).catch(() => ({ entries: [], fileSamples: [] }));
+    if (!directoryContext.fileSamples.length) {
+      readme = await collectReadme(repo, pageContext.branch, scopeInfo).catch(() => "");
+    }
+  } else {
+    readme = await collectReadme(repo, pageContext.branch, scopeInfo).catch(() => "");
+  }
+
+  const readmeLimit = resolveReadmeLimit(scopeInfo, fileContext, directoryContext);
 
   return {
     ...repo,
@@ -714,11 +738,11 @@ async function collectRepositoryContext(repo, pageContext, scopeInfo) {
     topics,
     languages,
     files,
-    readme: truncate(readme, 8000),
+    readme: readmeLimit ? truncate(readme, readmeLimit) : "",
     filePath: fileContext.path,
-    fileContent: truncate(fileContext.content, 6000),
-    directoryEntries: directoryContext.entries,
-    directoryFileSamples: directoryContext.fileSamples,
+    fileContent: truncate(fileContext.content, CONTEXT_BUDGETS.fileContentChars),
+    directoryEntries: limitDirectoryEntries(directoryContext.entries),
+    directoryFileSamples: limitDirectoryFileSamples(directoryContext.fileSamples),
     scope: {
       preference: scopeInfo.preference,
       effectiveMode: scopeInfo.effectiveMode,
@@ -729,6 +753,39 @@ async function collectRepositoryContext(repo, pageContext, scopeInfo) {
     },
     url: location.href
   };
+}
+
+function resolveReadmeLimit(scopeInfo, fileContext, directoryContext) {
+  if (scopeInfo.preference === "repo") {
+    return CONTEXT_BUDGETS.repoReadmeChars;
+  }
+  if (scopeInfo.preference === "catalog" && !directoryContext.fileSamples.length) {
+    return CONTEXT_BUDGETS.catalogFallbackReadmeChars;
+  }
+  if (scopeInfo.preference === "file" && !fileContext.content) {
+    return CONTEXT_BUDGETS.fileFallbackReadmeChars;
+  }
+  return 0;
+}
+
+function limitDirectoryEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries.slice(0, CONTEXT_BUDGETS.catalogEntries);
+}
+
+function limitDirectoryFileSamples(samples) {
+  if (!Array.isArray(samples)) {
+    return [];
+  }
+  return samples
+    .filter((item) => String(item?.snippet || "").trim())
+    .slice(0, CONTEXT_BUDGETS.catalogSampleFiles)
+    .map((item) => ({
+      ...item,
+      snippet: truncate(item.snippet, CONTEXT_BUDGETS.catalogSampleChars)
+    }));
 }
 
 async function collectDirectoryContext(repo, pageContext, scopeInfo) {
@@ -852,7 +909,7 @@ function collectVisibleFiles() {
   return [...new Set(nodes
     .map((node) => node.textContent.replace(/\s+/g, " ").trim())
     .filter(Boolean))]
-    .slice(0, 50);
+    .slice(0, CONTEXT_BUDGETS.repoVisibleFiles);
 }
 
 function uniqueTexts(nodes) {
